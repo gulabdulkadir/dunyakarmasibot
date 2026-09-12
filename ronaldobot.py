@@ -529,7 +529,7 @@ def main():
     server_thread.daemon = True
     server_thread.start()
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).get_updates_read_timeout(42).build()
     
     app.add_handler(CommandHandler("oylama", oylama))
     app.add_handler(CommandHandler("macikapat", macikapat)) 
