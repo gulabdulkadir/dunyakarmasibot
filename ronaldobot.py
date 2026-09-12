@@ -2,12 +2,25 @@ import nest_asyncio
 nest_asyncio.apply()
 
 import os
+import threading
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from supabase import create_client, Client
 from datetime import datetime, time, timezone
 
-# --- GÜVENLİK: KİMLİK BİLGİLERİNİ GİZLİ HAFIZADAN ÇEKİYORUZ ---
+# --- RENDER WEB SERVİSİ İÇİN MİNİ WEB SUNUCUSU ---
+server_app = Flask(__name__)
+
+@server_app.route('/')
+def home():
+    return "RONALDO(BOT) aktif ve çalışıyor! ⚽"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server_app.run(host="0.0.0.0", port=port)
+
+# --- KİMLİK BİLGİLERİNİ GİZLİ HAFIZADAN ÇEKİYORUZ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL") 
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -58,6 +71,7 @@ async def oylama(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=butonlari_getir()
     )
 
+# --- GÜNCELLENEN: MANUEL MAÇ KAPATMA VE ADİL PUAN DAĞITICI ---
 async def macikapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type in ['group', 'supergroup']:
         kullanici = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
@@ -65,6 +79,7 @@ async def macikapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Bu komutu sadece yöneticiler kullanabilir!")
             return
 
+    # Aktif maçı bul
     aktif_mac_sorgusu = supabase.table("maclar").select("id").eq("aktif_mi", True).execute()
     if not aktif_mac_sorgusu.data:
         await update.message.reply_text("⚠️ Kapatılacak aktif bir oylama bulunmuyor.")
@@ -72,18 +87,20 @@ async def macikapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     mac_id = aktif_mac_sorgusu.data[0]['id']
 
+    # "geliyor" diyen (asil) oyuncuları bul ve hak ettikleri +10 puanı ekle
     gelenler = supabase.table("kayitlar").select("telegram_id").eq("mac_id", mac_id).eq("durum", "geliyor").execute()
     
     eklenen_kisi_sayisi = 0
     for kisi in gelenler.data:
         tid = kisi['telegram_id']
         if tid < 0:
-            continue
+            continue # Dışarıdan eklenenleri atla
         oyuncu = supabase.table("oyuncular").select("toplam_puan").eq("telegram_id", tid).execute()
         eski_puan = oyuncu.data[0]['toplam_puan'] if oyuncu.data else 0
         supabase.table("oyuncular").update({"toplam_puan": eski_puan + 10}).eq("telegram_id", tid).execute()
         eklenen_kisi_sayisi += 1
 
+    # Maçı kapat
     supabase.table("maclar").update({"aktif_mi": False}).eq("id", mac_id).execute()
     
     await update.message.reply_text(
@@ -93,6 +110,7 @@ async def macikapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+# --- YENİ: SEZONU BİTİR VE BONUS PUAN DAĞIT ---
 async def sezonubitir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type in ['group', 'supergroup']:
         kullanici = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
@@ -106,6 +124,7 @@ async def sezonubitir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Sıfırlanacak oyuncu bulunmuyor.")
         return
 
+    # Herkesin puanını 0 yap
     supabase.table("oyuncular").update({"toplam_puan": 0}).neq("telegram_id", 0).execute()
 
     podyum_mesaji = "🏁 *SEZON BİTTİ - YENİ SEZON BAŞLADI!* 🏁\n\nÖnceki sezonun sıralamasına göre yeni sezona bonus puanlarla başlanıyor:\n\n"
@@ -115,11 +134,11 @@ async def sezonubitir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         isim = oyuncu['isim']
         bonus = 0
 
-        if i == 0 or i == 1 or i == 2:  
+        if i == 0 or i == 1 or i == 2:  # İlk 3 kişi
             bonus = 30
-        elif i == 3 or i == 4 or i == 5:  
+        elif i == 3 or i == 4 or i == 5:  # 4, 5, 6. kişiler
             bonus = 20
-        elif i == 6 or i == 7 or i == 8:  
+        elif i == 6 or i == 7 or i == 8:  # 7, 8, 9. kişiler
             bonus = 10
 
         if bonus > 0:
@@ -382,7 +401,7 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/macikapat` - Aktif oylamayı sonlandırır ve asil kadrodakilere +10 puanları dağıtır.\n"
         "• `/sezonubitir` - Sezonu sıfırlar, ilk 3'e +30, 4-6 arasına +20, 7-9 arasına +10 puan vererek yeni sezonu açar.\n"
         "• `/odemebaslat` - Ödeme onay butonunu gruba gönderir.\n"
-        "• `/odemelerikontrol` - Ödeme yapmayan asil oyuncuları etiketleyerek uyarır.\n"
+        "• `/odemekontrol` - Ödeme yapmayan asil oyuncuları etiketleyerek uyarır.\n"
         "• `/puanver [Puan]` - Oyuncunun mesajını yanıtlayarak (reply) puan verir/siler.\n"
         "• `/kick` - Oyuncunun mesajını yanıtlayarak (reply) kadrodan çıkarır.\n"
         "• `/disardanekle [İsim]` - Kadroya dışarıdan oyuncu ekler.\n"
@@ -504,6 +523,12 @@ async def otomatik_mac_bitir(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     print("RONALDO(BOT) başlatılıyor...")
+    
+    # Flask sunucusunu arka planda başlat (Render web service çökmesini önler)
+    server_thread = threading.Thread(target=run_web_server)
+    server_thread.daemon = True
+    server_thread.start()
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("oylama", oylama))
@@ -518,7 +543,7 @@ def main():
     app.add_handler(CommandHandler("yardim", yardim))                 
     app.add_handler(CommandHandler("kurallar", yardim))               
     app.add_handler(CommandHandler("odemebaslat", odemebaslat))       
-    app.add_handler(CommandHandler("odemelerikontrol", odemelerikontrol)) 
+    app.add_handler(CommandHandler("odemekontrol", odemelerikontrol)) 
     app.add_handler(CallbackQueryHandler(buton_dinleyici))
 
     hatirlatici_zaman = time(hour=12, minute=0, tzinfo=timezone.utc)
@@ -527,8 +552,8 @@ def main():
     bitirici_zaman = time(hour=20, minute=0, tzinfo=timezone.utc)
     app.job_queue.run_daily(otomatik_mac_bitir, time=bitirici_zaman, days=(5,))
     
-    print("RONALDO(BOT) başarıyla çalışıyor! Telegram grubuna gidip komutları deneyebilirsiniz.")
+    print("RONALDO(BOT) başarıyla çalışıyor!")
     app.run_polling()
 
-if __name__ == 'main__':
+if __name__ == '__main__':
     main()
